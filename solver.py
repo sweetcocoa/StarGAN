@@ -13,12 +13,14 @@ import datetime
 class Solver(object):
     """Solver for training and testing StarGAN."""
 
-    def __init__(self, celeba_loader, rafd_loader, config):
+    def __init__(self, mnist_loader, svhn_loader, config):
         """Initialize configurations."""
 
         # Data loader.
-        self.celeba_loader = celeba_loader
-        self.rafd_loader = rafd_loader
+        self.mnist_loader = mnist_loader
+        self.svhn_loader = svhn_loader
+        # self.mnist_loader = mnist_loader
+        # self.svhn_loader = svhn_loader
 
         # Model configurations.
         self.c_dim = config.c_dim
@@ -71,7 +73,7 @@ class Solver(object):
 
     def build_model(self):
         """Create a generator and a discriminator."""
-        if self.dataset in ['CelebA', 'RaFD']:
+        if self.dataset in ['mnist', 'svhn']:
             self.G = Generator(self.g_conv_dim, self.c_dim, self.g_repeat_num)
             self.D = Discriminator(self.image_size, self.d_conv_dim, self.c_dim, self.d_repeat_num) 
         elif self.dataset in ['Both']:
@@ -146,46 +148,48 @@ class Solver(object):
         out[np.arange(batch_size), labels.long()] = 1
         return out
 
-    def create_labels(self, c_org, c_dim=5, dataset='CelebA', selected_attrs=None):
+    def create_labels(self, c_org, c_dim=10, dataset='mnist', selected_attrs=None):
         """Generate target domain labels for debugging and testing."""
-        # Get hair color indices.
-        if dataset == 'CelebA':
-            hair_color_indices = []
+        # Get Number indices.
+        if dataset == 'mnist':
+            number_indices = []
             for i, attr_name in enumerate(selected_attrs):
-                if attr_name in ['Black_Hair', 'Blond_Hair', 'Brown_Hair', 'Gray_Hair']:
-                    hair_color_indices.append(i)
+                if attr_name in "0123456789":
+                    number_indices.append(i)
 
         c_trg_list = []
         for i in range(c_dim):
-            if dataset == 'CelebA':
+            if dataset == 'mnist':
                 c_trg = c_org.clone()
-                if i in hair_color_indices:  # Set one hair color to 1 and the rest to 0.
+                if i in number_indices:  # Set one hair color to 1 and the rest to 0.
                     c_trg[:, i] = 1
-                    for j in hair_color_indices:
+                    for j in number_indices:
                         if j != i:
                             c_trg[:, j] = 0
                 else:
                     c_trg[:, i] = (c_trg[:, i] == 0)  # Reverse attribute value.
-            elif dataset == 'RaFD':
+            elif dataset == 'svhn':
                 c_trg = self.label2onehot(torch.ones(c_org.size(0))*i, c_dim)
 
             c_trg_list.append(c_trg.to(self.device))
         return c_trg_list
 
-    def classification_loss(self, logit, target, dataset='CelebA'):
+    def classification_loss(self, logit, target, dataset='mnist'):
         """Compute binary or softmax cross entropy loss."""
-        if dataset == 'CelebA':
+        if dataset == 'mnist':
             return F.binary_cross_entropy_with_logits(logit, target, size_average=False) / logit.size(0)
-        elif dataset == 'RaFD':
+        elif dataset == 'svhn':
             return F.cross_entropy(logit, target)
 
     def train(self):
         """Train StarGAN within a single dataset."""
         # Set data loader.
-        if self.dataset == 'CelebA':
-            data_loader = self.celeba_loader
-        elif self.dataset == 'RaFD':
-            data_loader = self.rafd_loader
+        if self.dataset == 'mnist':
+            data_loader = self.mnist_loader
+        elif self.dataset == 'svhn':
+            data_loader = self.svhn_loader
+        else:
+            raise OSError
 
         # Fetch fixed inputs for debugging.
         data_iter = iter(data_loader)
@@ -223,10 +227,10 @@ class Solver(object):
             rand_idx = torch.randperm(label_org.size(0))
             label_trg = label_org[rand_idx]
 
-            if self.dataset == 'CelebA':
+            if self.dataset == 'mnist':
                 c_org = label_org.clone()
                 c_trg = label_trg.clone()
-            elif self.dataset == 'RaFD':
+            elif self.dataset == 'svhn':
                 c_org = self.label2onehot(label_org, self.c_dim)
                 c_trg = self.label2onehot(label_trg, self.c_dim)
 
@@ -341,18 +345,18 @@ class Solver(object):
     def train_multi(self):
         """Train StarGAN with multiple datasets."""        
         # Data iterators.
-        celeba_iter = iter(self.celeba_loader)
-        rafd_iter = iter(self.rafd_loader)
+        mnist_iter = iter(self.mnist_loader)
+        svhn_iter = iter(self.svhn_loader)
 
         # Fetch fixed inputs for debugging.
-        x_fixed, c_org = next(celeba_iter)
+        x_fixed, c_org = next(mnist_iter)
         x_fixed = x_fixed.to(self.device)
-        c_celeba_list = self.create_labels(c_org, self.c_dim, 'CelebA', self.selected_attrs)
-        c_rafd_list = self.create_labels(c_org, self.c2_dim, 'RaFD')
-        zero_celeba = torch.zeros(x_fixed.size(0), self.c_dim).to(self.device)           # Zero vector for CelebA.
-        zero_rafd = torch.zeros(x_fixed.size(0), self.c2_dim).to(self.device)             # Zero vector for RaFD.
-        mask_celeba = self.label2onehot(torch.zeros(x_fixed.size(0)), 2).to(self.device)  # Mask vector: [1, 0].
-        mask_rafd = self.label2onehot(torch.ones(x_fixed.size(0)), 2).to(self.device)     # Mask vector: [0, 1].
+        c_mnist_list = self.create_labels(c_org, self.c_dim, 'mnist', self.selected_attrs)
+        c_svhn_list = self.create_labels(c_org, self.c2_dim, 'svhn')
+        zero_mnist = torch.zeros(x_fixed.size(0), self.c_dim).to(self.device)           # Zero vector for mnist.
+        zero_svhn = torch.zeros(x_fixed.size(0), self.c2_dim).to(self.device)             # Zero vector for svhn.
+        mask_mnist = self.label2onehot(torch.zeros(x_fixed.size(0)), 2).to(self.device)  # Mask vector: [1, 0].
+        mask_svhn = self.label2onehot(torch.ones(x_fixed.size(0)), 2).to(self.device)     # Mask vector: [0, 1].
 
         # Learning rate cache for decaying.
         g_lr = self.g_lr
@@ -368,37 +372,37 @@ class Solver(object):
         print('Start training...')
         start_time = time.time()
         for i in range(start_iters, self.num_iters):
-            for dataset in ['CelebA', 'RaFD']:
+            for dataset in ['mnist', 'svhn']:
 
                 # =================================================================================== #
                 #                             1. Preprocess input data                                #
                 # =================================================================================== #
                 
                 # Fetch real images and labels.
-                data_iter = celeba_iter if dataset == 'CelebA' else rafd_iter
+                data_iter = mnist_iter if dataset == 'mnist' else svhn_iter
                 
                 try:
                     x_real, label_org = next(data_iter)
                 except:
-                    if dataset == 'CelebA':
-                        celeba_iter = iter(self.celeba_loader)
-                        x_real, label_org = next(celeba_iter)
-                    elif dataset == 'RaFD':
-                        rafd_iter = iter(self.rafd_loader)
-                        x_real, label_org = next(rafd_iter)
+                    if dataset == 'mnist':
+                        mnist_iter = iter(self.mnist_loader)
+                        x_real, label_org = next(mnist_iter)
+                    elif dataset == 'svhn':
+                        svhn_iter = iter(self.svhn_loader)
+                        x_real, label_org = next(svhn_iter)
 
                 # Generate target domain labels randomly.
                 rand_idx = torch.randperm(label_org.size(0))
                 label_trg = label_org[rand_idx]
 
-                if dataset == 'CelebA':
+                if dataset == 'mnist':
                     c_org = label_org.clone()
                     c_trg = label_trg.clone()
                     zero = torch.zeros(x_real.size(0), self.c2_dim)
                     mask = self.label2onehot(torch.zeros(x_real.size(0)), 2)
                     c_org = torch.cat([c_org, zero, mask], dim=1)
                     c_trg = torch.cat([c_trg, zero, mask], dim=1)
-                elif dataset == 'RaFD':
+                elif dataset == 'svhn':
                     c_org = self.label2onehot(label_org, self.c2_dim)
                     c_trg = self.label2onehot(label_trg, self.c2_dim)
                     zero = torch.zeros(x_real.size(0), self.c_dim)
@@ -418,7 +422,7 @@ class Solver(object):
 
                 # Compute loss with real images.
                 out_src, out_cls = self.D(x_real)
-                out_cls = out_cls[:, :self.c_dim] if dataset == 'CelebA' else out_cls[:, self.c_dim:]
+                out_cls = out_cls[:, :self.c_dim] if dataset == 'mnist' else out_cls[:, self.c_dim:]
                 d_loss_real = - torch.mean(out_src)
                 d_loss_cls = self.classification_loss(out_cls, label_org, dataset)
 
@@ -454,7 +458,7 @@ class Solver(object):
                     # Original-to-target domain.
                     x_fake = self.G(x_real, c_trg)
                     out_src, out_cls = self.D(x_fake)
-                    out_cls = out_cls[:, :self.c_dim] if dataset == 'CelebA' else out_cls[:, self.c_dim:]
+                    out_cls = out_cls[:, :self.c_dim] if dataset == 'mnist' else out_cls[:, self.c_dim:]
                     g_loss_fake = - torch.mean(out_src)
                     g_loss_cls = self.classification_loss(out_cls, label_trg, dataset)
 
@@ -494,11 +498,11 @@ class Solver(object):
             if (i+1) % self.sample_step == 0:
                 with torch.no_grad():
                     x_fake_list = [x_fixed]
-                    for c_fixed in c_celeba_list:
-                        c_trg = torch.cat([c_fixed, zero_rafd, mask_celeba], dim=1)
+                    for c_fixed in c_mnist_list:
+                        c_trg = torch.cat([c_fixed, zero_svhn, mask_mnist], dim=1)
                         x_fake_list.append(self.G(x_fixed, c_trg))
-                    for c_fixed in c_rafd_list:
-                        c_trg = torch.cat([zero_celeba, c_fixed, mask_rafd], dim=1)
+                    for c_fixed in c_svhn_list:
+                        c_trg = torch.cat([zero_mnist, c_fixed, mask_svhn], dim=1)
                         x_fake_list.append(self.G(x_fixed, c_trg))
                     x_concat = torch.cat(x_fake_list, dim=3)
                     sample_path = os.path.join(self.sample_dir, '{}-images.jpg'.format(i+1))
@@ -526,10 +530,10 @@ class Solver(object):
         self.restore_model(self.test_iters)
         
         # Set data loader.
-        if self.dataset == 'CelebA':
-            data_loader = self.celeba_loader
-        elif self.dataset == 'RaFD':
-            data_loader = self.rafd_loader
+        if self.dataset == 'mnist':
+            data_loader = self.mnist_loader
+        elif self.dataset == 'svhn':
+            data_loader = self.svhn_loader
         
         with torch.no_grad():
             for i, (x_real, c_org) in enumerate(data_loader):
@@ -555,24 +559,24 @@ class Solver(object):
         self.restore_model(self.test_iters)
         
         with torch.no_grad():
-            for i, (x_real, c_org) in enumerate(self.celeba_loader):
+            for i, (x_real, c_org) in enumerate(self.mnist_loader):
 
                 # Prepare input images and target domain labels.
                 x_real = x_real.to(self.device)
-                c_celeba_list = self.create_labels(c_org, self.c_dim, 'CelebA', self.selected_attrs)
-                c_rafd_list = self.create_labels(c_org, self.c2_dim, 'RaFD')
-                zero_celeba = torch.zeros(x_real.size(0), self.c_dim).to(self.device)            # Zero vector for CelebA.
-                zero_rafd = torch.zeros(x_real.size(0), self.c2_dim).to(self.device)             # Zero vector for RaFD.
-                mask_celeba = self.label2onehot(torch.zeros(x_real.size(0)), 2).to(self.device)  # Mask vector: [1, 0].
-                mask_rafd = self.label2onehot(torch.ones(x_real.size(0)), 2).to(self.device)     # Mask vector: [0, 1].
+                c_mnist_list = self.create_labels(c_org, self.c_dim, 'mnist', self.selected_attrs)
+                c_svhn_list = self.create_labels(c_org, self.c2_dim, 'svhn')
+                zero_mnist = torch.zeros(x_real.size(0), self.c_dim).to(self.device)            # Zero vector for mnist.
+                zero_svhn = torch.zeros(x_real.size(0), self.c2_dim).to(self.device)             # Zero vector for svhn.
+                mask_mnist = self.label2onehot(torch.zeros(x_real.size(0)), 2).to(self.device)  # Mask vector: [1, 0].
+                mask_svhn = self.label2onehot(torch.ones(x_real.size(0)), 2).to(self.device)     # Mask vector: [0, 1].
 
                 # Translate images.
                 x_fake_list = [x_real]
-                for c_celeba in c_celeba_list:
-                    c_trg = torch.cat([c_celeba, zero_rafd, mask_celeba], dim=1)
+                for c_mnist in c_mnist_list:
+                    c_trg = torch.cat([c_mnist, zero_svhn, mask_mnist], dim=1)
                     x_fake_list.append(self.G(x_real, c_trg))
-                for c_rafd in c_rafd_list:
-                    c_trg = torch.cat([zero_celeba, c_rafd, mask_rafd], dim=1)
+                for c_svhn in c_svhn_list:
+                    c_trg = torch.cat([zero_mnist, c_svhn, mask_svhn], dim=1)
                     x_fake_list.append(self.G(x_real, c_trg))
 
                 # Save the translated images.
