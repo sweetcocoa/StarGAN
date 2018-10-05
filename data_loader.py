@@ -15,6 +15,7 @@ def get_loader(config):
     svhn = datasets.SVHN(root=config.svhn_path, download=True, transform=transform)
 
 
+
     mnist_loader = torch.utils.data.DataLoader(dataset=mnist,
                                                batch_size=config.batch_size,
                                                shuffle=True,
@@ -30,9 +31,10 @@ def get_loader(config):
 
 if __name__ == "__main__":
     class Config:
-        batch_size=4,
-        num_workers=4,
-        svhn_path="svhn"
-        mnist_path="mnist"
+        batch_size = 4
+        num_workers = 4
+        svhn_path = "svhn"
+        mnist_path = "mnist"
         image_size = 28
+    print("config", Config().num_workers)
     get_loader(Config())

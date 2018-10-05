@@ -26,7 +26,7 @@ def main(config):
 
     # Solver for training and testing StarGAN.
     solver = Solver(mnist_loader, svhn_loader, config)
-
+    # exit()
     if config.mode == 'train':
         if config.dataset in ['mnist', 'svhn']:
             solver.train()
@@ -50,14 +50,14 @@ if __name__ == '__main__':
     parser.add_argument('--image_size', type=int, default=28, help='image resolution')
     parser.add_argument('--g_conv_dim', type=int, default=64, help='number of conv filters in the first layer of G')
     parser.add_argument('--d_conv_dim', type=int, default=64, help='number of conv filters in the first layer of D')
-    parser.add_argument('--g_repeat_num', type=int, default=6, help='number of residual blocks in G')
-    parser.add_argument('--d_repeat_num', type=int, default=6, help='number of strided conv layers in D')
+    parser.add_argument('--g_repeat_num', type=int, default=3, help='number of residual blocks in G')
+    parser.add_argument('--d_repeat_num', type=int, default=3, help='number of strided conv layers in D')
     parser.add_argument('--lambda_cls', type=float, default=1, help='weight for domain classification loss')
     parser.add_argument('--lambda_rec', type=float, default=10, help='weight for reconstruction loss')
     parser.add_argument('--lambda_gp', type=float, default=10, help='weight for gradient penalty')
     
     # Training configuration.
-    parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'svhn', 'Both'])
+    parser.add_argument('--dataset', type=str, default='Both', choices=['mnist', 'svhn', 'Both'])
     parser.add_argument('--batch_size', type=int, default=16, help='mini-batch size')
     parser.add_argument('--num_iters', type=int, default=2000, help='number of total iterations for training D')
     parser.add_argument('--num_iters_decay', type=int, default=1000, help='number of iterations for decaying lr')
@@ -79,9 +79,11 @@ if __name__ == '__main__':
     parser.add_argument('--use_tensorboard', type=str2bool, default=True)
 
     # Directories.
-    parser.add_argument('--celeba_image_dir', type=str, default='data/CelebA_nocrop/images')
-    parser.add_argument('--attr_path', type=str, default='data/list_attr_celeba.txt')
-    parser.add_argument('--rafd_image_dir', type=str, default='data/RaFD/train')
+    # parser.add_argument('--celeba_image_dir', type=str, default='data/CelebA_nocrop/images')
+    # parser.add_argument('--attr_path', type=str, default='data/list_attr_celeba.txt')
+    # parser.add_argument('--rafd_image_dir', type=str, default='data/RaFD/train')
+    parser.add_argument('--mnist_path', type=str, default='mnist/')
+    parser.add_argument('--svhn_path', type=str, default='svhn/')
     parser.add_argument('--log_dir', type=str, default='stargan/logs')
     parser.add_argument('--model_save_dir', type=str, default='stargan/models')
     parser.add_argument('--sample_dir', type=str, default='stargan/samples')

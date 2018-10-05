@@ -150,6 +150,8 @@ class Solver(object):
 
     def create_labels(self, c_org, c_dim=10, dataset='mnist', selected_attrs=None):
         """Generate target domain labels for debugging and testing."""
+        # c_org_list = torch.
+
         # Get Number indices.
         if dataset == 'mnist':
             number_indices = []
@@ -158,6 +160,7 @@ class Solver(object):
                     number_indices.append(i)
 
         c_trg_list = []
+
         for i in range(c_dim):
             if dataset == 'mnist':
                 c_trg = c_org.clone()
@@ -174,176 +177,12 @@ class Solver(object):
             c_trg_list.append(c_trg.to(self.device))
         return c_trg_list
 
-    def classification_loss(self, logit, target, dataset='mnist'):
+    def classification_loss(self, logit, target):
         """Compute binary or softmax cross entropy loss."""
-        if dataset == 'mnist':
-            return F.binary_cross_entropy_with_logits(logit, target, size_average=False) / logit.size(0)
-        elif dataset == 'svhn':
-            return F.cross_entropy(logit, target)
+        return F.cross_entropy(logit, target)
 
-    def train(self):
-        """Train StarGAN within a single dataset."""
-        # Set data loader.
-        if self.dataset == 'mnist':
-            data_loader = self.mnist_loader
-        elif self.dataset == 'svhn':
-            data_loader = self.svhn_loader
-        else:
-            raise OSError
-
-        # Fetch fixed inputs for debugging.
-        data_iter = iter(data_loader)
-        x_fixed, c_org = next(data_iter)
-        x_fixed = x_fixed.to(self.device)
-        c_fixed_list = self.create_labels(c_org, self.c_dim, self.dataset, self.selected_attrs)
-
-        # Learning rate cache for decaying.
-        g_lr = self.g_lr
-        d_lr = self.d_lr
-
-        # Start training from scratch or resume training.
-        start_iters = 0
-        if self.resume_iters:
-            start_iters = self.resume_iters
-            self.restore_model(self.resume_iters)
-
-        # Start training.
-        print('Start training...')
-        start_time = time.time()
-        for i in range(start_iters, self.num_iters):
-
-            # =================================================================================== #
-            #                             1. Preprocess input data                                #
-            # =================================================================================== #
-
-            # Fetch real images and labels.
-            try:
-                x_real, label_org = next(data_iter)
-            except:
-                data_iter = iter(data_loader)
-                x_real, label_org = next(data_iter)
-
-            # Generate target domain labels randomly.
-            rand_idx = torch.randperm(label_org.size(0))
-            label_trg = label_org[rand_idx]
-
-            if self.dataset == 'mnist':
-                c_org = label_org.clone()
-                c_trg = label_trg.clone()
-            elif self.dataset == 'svhn':
-                c_org = self.label2onehot(label_org, self.c_dim)
-                c_trg = self.label2onehot(label_trg, self.c_dim)
-
-            x_real = x_real.to(self.device)           # Input images.
-            c_org = c_org.to(self.device)             # Original domain labels.
-            c_trg = c_trg.to(self.device)             # Target domain labels.
-            label_org = label_org.to(self.device)     # Labels for computing classification loss.
-            label_trg = label_trg.to(self.device)     # Labels for computing classification loss.
-
-            # =================================================================================== #
-            #                             2. Train the discriminator                              #
-            # =================================================================================== #
-
-            # Compute loss with real images.
-            out_src, out_cls = self.D(x_real)
-            d_loss_real = - torch.mean(out_src)
-            d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
-
-            # Compute loss with fake images.
-            x_fake = self.G(x_real, c_trg)
-            out_src, out_cls = self.D(x_fake.detach())
-            d_loss_fake = torch.mean(out_src)
-
-            # Compute loss for gradient penalty.
-            alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
-            x_hat = (alpha * x_real.data + (1 - alpha) * x_fake.data).requires_grad_(True)
-            out_src, _ = self.D(x_hat)
-            d_loss_gp = self.gradient_penalty(out_src, x_hat)
-
-            # Backward and optimize.
-            d_loss = d_loss_real + d_loss_fake + self.lambda_cls * d_loss_cls + self.lambda_gp * d_loss_gp
-            self.reset_grad()
-            d_loss.backward()
-            self.d_optimizer.step()
-
-            # Logging.
-            loss = {}
-            loss['D/loss_real'] = d_loss_real.item()
-            loss['D/loss_fake'] = d_loss_fake.item()
-            loss['D/loss_cls'] = d_loss_cls.item()
-            loss['D/loss_gp'] = d_loss_gp.item()
-            
-            # =================================================================================== #
-            #                               3. Train the generator                                #
-            # =================================================================================== #
-            
-            if (i+1) % self.n_critic == 0:
-                # Original-to-target domain.
-                x_fake = self.G(x_real, c_trg)
-                out_src, out_cls = self.D(x_fake)
-                g_loss_fake = - torch.mean(out_src)
-                g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
-
-                # Target-to-original domain.
-                x_reconst = self.G(x_fake, c_org)
-                g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
-
-                # Backward and optimize.
-                g_loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls
-                self.reset_grad()
-                g_loss.backward()
-                self.g_optimizer.step()
-
-                # Logging.
-                loss['G/loss_fake'] = g_loss_fake.item()
-                loss['G/loss_rec'] = g_loss_rec.item()
-                loss['G/loss_cls'] = g_loss_cls.item()
-
-            # =================================================================================== #
-            #                                 4. Miscellaneous                                    #
-            # =================================================================================== #
-
-            # Print out training information.
-            if (i+1) % self.log_step == 0:
-                et = time.time() - start_time
-                et = str(datetime.timedelta(seconds=et))[:-7]
-                log = "Elapsed [{}], Iteration [{}/{}]".format(et, i+1, self.num_iters)
-                for tag, value in loss.items():
-                    log += ", {}: {:.4f}".format(tag, value)
-                print(log)
-
-                if self.use_tensorboard:
-                    for tag, value in loss.items():
-                        self.logger.scalar_summary(tag, value, i+1)
-
-            # Translate fixed images for debugging.
-            if (i+1) % self.sample_step == 0:
-                with torch.no_grad():
-                    x_fake_list = [x_fixed]
-                    for c_fixed in c_fixed_list:
-                        x_fake_list.append(self.G(x_fixed, c_fixed))
-                    x_concat = torch.cat(x_fake_list, dim=3)
-                    sample_path = os.path.join(self.sample_dir, '{}-images.jpg'.format(i+1))
-                    save_image(self.denorm(x_concat.data.cpu()), sample_path, nrow=1, padding=0)
-                    print('Saved real and fake images into {}...'.format(sample_path))
-
-            # Save model checkpoints.
-            if (i+1) % self.model_save_step == 0:
-                G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(i+1))
-                D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(i+1))
-                torch.save(self.G.state_dict(), G_path)
-                torch.save(self.D.state_dict(), D_path)
-                print('Saved model checkpoints into {}...'.format(self.model_save_dir))
-
-            # Decay learning rates.
-            if (i+1) % self.lr_update_step == 0 and (i+1) > (self.num_iters - self.num_iters_decay):
-                g_lr -= (self.g_lr / float(self.num_iters_decay))
-                d_lr -= (self.d_lr / float(self.num_iters_decay))
-                self.update_lr(g_lr, d_lr)
-                print ('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
-
-    def train_multi(self):
-        """Train StarGAN with multiple datasets."""        
+    def _train_multi(self):
+        """Train StarGAN with multiple datasets."""
         # Data iterators.
         mnist_iter = iter(self.mnist_loader)
         svhn_iter = iter(self.svhn_loader)
@@ -353,10 +192,10 @@ class Solver(object):
         x_fixed = x_fixed.to(self.device)
         c_mnist_list = self.create_labels(c_org, self.c_dim, 'mnist', self.selected_attrs)
         c_svhn_list = self.create_labels(c_org, self.c2_dim, 'svhn')
-        zero_mnist = torch.zeros(x_fixed.size(0), self.c_dim).to(self.device)           # Zero vector for mnist.
-        zero_svhn = torch.zeros(x_fixed.size(0), self.c2_dim).to(self.device)             # Zero vector for svhn.
+        zero_mnist = torch.zeros(x_fixed.size(0), self.c_dim).to(self.device)  # Zero vector for mnist.
+        zero_svhn = torch.zeros(x_fixed.size(0), self.c2_dim).to(self.device)  # Zero vector for svhn.
         mask_mnist = self.label2onehot(torch.zeros(x_fixed.size(0)), 2).to(self.device)  # Mask vector: [1, 0].
-        mask_svhn = self.label2onehot(torch.ones(x_fixed.size(0)), 2).to(self.device)     # Mask vector: [0, 1].
+        mask_svhn = self.label2onehot(torch.ones(x_fixed.size(0)), 2).to(self.device)  # Mask vector: [0, 1].
 
         # Learning rate cache for decaying.
         g_lr = self.g_lr
@@ -377,10 +216,10 @@ class Solver(object):
                 # =================================================================================== #
                 #                             1. Preprocess input data                                #
                 # =================================================================================== #
-                
+
                 # Fetch real images and labels.
                 data_iter = mnist_iter if dataset == 'mnist' else svhn_iter
-                
+
                 try:
                     x_real, label_org = next(data_iter)
                 except:
@@ -410,11 +249,11 @@ class Solver(object):
                     c_org = torch.cat([zero, c_org, mask], dim=1)
                     c_trg = torch.cat([zero, c_trg, mask], dim=1)
 
-                x_real = x_real.to(self.device)             # Input images.
-                c_org = c_org.to(self.device)               # Original domain labels.
-                c_trg = c_trg.to(self.device)               # Target domain labels.
-                label_org = label_org.to(self.device)       # Labels for computing classification loss.
-                label_trg = label_trg.to(self.device)       # Labels for computing classification loss.
+                x_real = x_real.to(self.device)  # Input images.
+                c_org = c_org.to(self.device)  # Original domain labels.
+                c_trg = c_trg.to(self.device)  # Target domain labels.
+                label_org = label_org.to(self.device)  # Labels for computing classification loss.
+                label_trg = label_trg.to(self.device)  # Labels for computing classification loss.
 
                 # =================================================================================== #
                 #                             2. Train the discriminator                              #
@@ -449,12 +288,12 @@ class Solver(object):
                 loss['D/loss_fake'] = d_loss_fake.item()
                 loss['D/loss_cls'] = d_loss_cls.item()
                 loss['D/loss_gp'] = d_loss_gp.item()
-            
+
                 # =================================================================================== #
                 #                               3. Train the generator                                #
                 # =================================================================================== #
 
-                if (i+1) % self.n_critic == 0:
+                if (i + 1) % self.n_critic == 0:
                     # Original-to-target domain.
                     x_fake = self.G(x_real, c_trg)
                     out_src, out_cls = self.D(x_fake)
@@ -482,20 +321,20 @@ class Solver(object):
                 # =================================================================================== #
 
                 # Print out training info.
-                if (i+1) % self.log_step == 0:
+                if (i + 1) % self.log_step == 0:
                     et = time.time() - start_time
                     et = str(datetime.timedelta(seconds=et))[:-7]
-                    log = "Elapsed [{}], Iteration [{}/{}], Dataset [{}]".format(et, i+1, self.num_iters, dataset)
+                    log = "Elapsed [{}], Iteration [{}/{}], Dataset [{}]".format(et, i + 1, self.num_iters, dataset)
                     for tag, value in loss.items():
                         log += ", {}: {:.4f}".format(tag, value)
                     print(log)
 
                     if self.use_tensorboard:
                         for tag, value in loss.items():
-                            self.logger.scalar_summary(tag, value, i+1)
+                            self.logger.scalar_summary(tag, value, i + 1)
 
             # Translate fixed images for debugging.
-            if (i+1) % self.sample_step == 0:
+            if (i + 1) % self.sample_step == 0:
                 with torch.no_grad():
                     x_fake_list = [x_fixed]
                     for c_fixed in c_mnist_list:
@@ -505,53 +344,206 @@ class Solver(object):
                         c_trg = torch.cat([zero_mnist, c_fixed, mask_svhn], dim=1)
                         x_fake_list.append(self.G(x_fixed, c_trg))
                     x_concat = torch.cat(x_fake_list, dim=3)
-                    sample_path = os.path.join(self.sample_dir, '{}-images.jpg'.format(i+1))
+                    sample_path = os.path.join(self.sample_dir, '{}-images.jpg'.format(i + 1))
                     save_image(self.denorm(x_concat.data.cpu()), sample_path, nrow=1, padding=0)
                     print('Saved real and fake images into {}...'.format(sample_path))
 
             # Save model checkpoints.
-            if (i+1) % self.model_save_step == 0:
-                G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(i+1))
-                D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(i+1))
+            if (i + 1) % self.model_save_step == 0:
+                G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(i + 1))
+                D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(i + 1))
                 torch.save(self.G.state_dict(), G_path)
                 torch.save(self.D.state_dict(), D_path)
                 print('Saved model checkpoints into {}...'.format(self.model_save_dir))
 
             # Decay learning rates.
-            if (i+1) % self.lr_update_step == 0 and (i+1) > (self.num_iters - self.num_iters_decay):
+            if (i + 1) % self.lr_update_step == 0 and (i + 1) > (self.num_iters - self.num_iters_decay):
                 g_lr -= (self.g_lr / float(self.num_iters_decay))
                 d_lr -= (self.d_lr / float(self.num_iters_decay))
                 self.update_lr(g_lr, d_lr)
-                print ('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
+                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
 
-    def test(self):
-        """Translate images using StarGAN trained on a single dataset."""
-        # Load the trained generator.
-        self.restore_model(self.test_iters)
-        
-        # Set data loader.
-        if self.dataset == 'mnist':
-            data_loader = self.mnist_loader
-        elif self.dataset == 'svhn':
-            data_loader = self.svhn_loader
-        
-        with torch.no_grad():
-            for i, (x_real, c_org) in enumerate(data_loader):
+    def train_multi(self):
+        """Train StarGAN with multiple datasets."""
 
-                # Prepare input images and target domain labels.
-                x_real = x_real.to(self.device)
-                c_trg_list = self.create_labels(c_org, self.c_dim, self.dataset, self.selected_attrs)
+        # Data iterators.
+        mnist_iter = iter(self.mnist_loader)
+        svhn_iter = iter(self.svhn_loader)
 
-                # Translate images.
-                x_fake_list = [x_real]
-                for c_trg in c_trg_list:
-                    x_fake_list.append(self.G(x_real, c_trg))
+        # Fetch fixed inputs for debugging.
+        # c : target domain label
+        x_fixed, c_org = next(mnist_iter)
+        x_fixed = x_fixed.to(self.device)
 
-                # Save the translated images.
-                x_concat = torch.cat(x_fake_list, dim=3)
-                result_path = os.path.join(self.result_dir, '{}-images.jpg'.format(i+1))
-                save_image(self.denorm(x_concat.data.cpu()), result_path, nrow=1, padding=0)
-                print('Saved real and fake images into {}...'.format(result_path))
+        # c_mnist_list = self.create_labels(c_org, self.c_dim, 'mnist', self.selected_attrs)
+        # c_svhn_list = self.create_labels(c_org, self.c2_dim, 'svhn')
+        zero_mnist = torch.zeros(x_fixed.size(0), self.c_dim).to(self.device)  # Zero vector for mnist.
+        zero_svhn = torch.zeros(x_fixed.size(0), self.c2_dim).to(self.device)  # Zero vector for svhn.
+        mask_mnist = self.label2onehot(torch.zeros(x_fixed.size(0)), 2).to(self.device)  # Mask vector: [1, 0].
+        mask_svhn = self.label2onehot(torch.ones(x_fixed.size(0)), 2).to(self.device)  # Mask vector: [0, 1].
+
+        # Learning rate cache for decaying.
+        g_lr = self.g_lr
+        d_lr = self.d_lr
+
+        # Start training from scratch or resume training.
+        start_iters = 0
+        if self.resume_iters:
+            start_iters = self.resume_iters
+            self.restore_model(self.resume_iters)
+
+        # Start training.
+        print('Start training...')
+        start_time = time.time()
+        for i in range(start_iters, self.num_iters):
+            for dataset in ['mnist', 'svhn']:
+
+                # =================================================================================== #
+                #                             1. Preprocess input data                                #
+                # =================================================================================== #
+
+                # Fetch real images and labels.
+                data_iter = mnist_iter if dataset == 'mnist' else svhn_iter
+
+                x_real, label_org = next(data_iter)
+
+                # Generate target domain labels randomly.
+                rand_idx = torch.randperm(label_org.size(0))
+                label_trg = label_org[rand_idx]
+
+                if dataset == 'mnist':
+                    c_org = label_org.clone().unsqueeze_(1).float()
+                    c_trg = label_trg.clone().unsqueeze_(1).float()
+                    zero = torch.zeros(x_real.size(0), self.c2_dim)
+                    mask = self.label2onehot(torch.zeros(x_real.size(0)), 2)
+                    c_org = torch.cat([c_org, zero, mask], dim=1)
+                    c_trg = torch.cat([c_trg, zero, mask], dim=1)
+                elif dataset == 'svhn':
+                    c_org = label_org.clone()
+                    c_trg = label_trg.clone()
+                    zero = torch.zeros(x_real.size(0), self.c_dim)
+                    mask = self.label2onehot(torch.ones(x_real.size(0)), 2)
+                    c_org = torch.cat([zero, c_org, mask], dim=1)
+                    c_trg = torch.cat([zero, c_trg, mask], dim=1)
+
+                x_real = x_real.to(self.device)  # Input images.
+                c_org = c_org.to(self.device)  # Original domain labels.
+                c_trg = c_trg.to(self.device)  # Target domain labels.
+                label_org = label_org.to(self.device)  # Labels for computing classification loss.
+                label_trg = label_trg.to(self.device)  # Labels for computing classification loss.
+
+                # =================================================================================== #
+                #                             2. Train the discriminator                              #
+                # =================================================================================== #
+
+
+                # Compute loss with real images.
+                out_src, out_cls = self.D(x_real)
+                out_cls = out_cls[:, :self.c_dim] if dataset == 'mnist' else out_cls[:, self.c_dim:]
+                d_loss_real = - torch.mean(out_src)
+                d_loss_cls = self.classification_loss(out_cls, label_org)
+
+                import pdb
+                pdb.set_trace()
+
+                # Compute loss with fake images.
+                x_fake = self.G(x_real, c_trg)
+                out_src, _ = self.D(x_fake.detach())
+                d_loss_fake = torch.mean(out_src)
+
+                # Compute loss for gradient penalty.
+                alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
+                x_hat = (alpha * x_real.data + (1 - alpha) * x_fake.data).requires_grad_(True)
+                out_src, _ = self.D(x_hat)
+                d_loss_gp = self.gradient_penalty(out_src, x_hat)
+
+                # Backward and optimize.
+                d_loss = d_loss_real + d_loss_fake + self.lambda_cls * d_loss_cls + self.lambda_gp * d_loss_gp
+                self.reset_grad()
+                d_loss.backward()
+                self.d_optimizer.step()
+
+                # Logging.
+                loss = {}
+                loss['D/loss_real'] = d_loss_real.item()
+                loss['D/loss_fake'] = d_loss_fake.item()
+                loss['D/loss_cls'] = d_loss_cls.item()
+                loss['D/loss_gp'] = d_loss_gp.item()
+
+                # =================================================================================== #
+                #                               3. Train the generator                                #
+                # =================================================================================== #
+
+                if (i + 1) % self.n_critic == 0:
+                    # Original-to-target domain.
+                    x_fake = self.G(x_real, c_trg)
+                    out_src, out_cls = self.D(x_fake)
+                    out_cls = out_cls[:, :self.c_dim] if dataset == 'mnist' else out_cls[:, self.c_dim:]
+                    g_loss_fake = - torch.mean(out_src)
+                    g_loss_cls = self.classification_loss(out_cls, label_trg, dataset)
+
+                    # Target-to-original domain.
+                    x_reconst = self.G(x_fake, c_org)
+                    g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
+
+                    # Backward and optimize.
+                    g_loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls
+                    self.reset_grad()
+                    g_loss.backward()
+                    self.g_optimizer.step()
+
+                    # Logging.
+                    loss['G/loss_fake'] = g_loss_fake.item()
+                    loss['G/loss_rec'] = g_loss_rec.item()
+                    loss['G/loss_cls'] = g_loss_cls.item()
+
+                # =================================================================================== #
+                #                                 4. Miscellaneous                                    #
+                # =================================================================================== #
+
+                # Print out training info.
+                if (i + 1) % self.log_step == 0:
+                    et = time.time() - start_time
+                    et = str(datetime.timedelta(seconds=et))[:-7]
+                    log = "Elapsed [{}], Iteration [{}/{}], Dataset [{}]".format(et, i + 1, self.num_iters, dataset)
+                    for tag, value in loss.items():
+                        log += ", {}: {:.4f}".format(tag, value)
+                    print(log)
+
+                    if self.use_tensorboard:
+                        for tag, value in loss.items():
+                            self.logger.scalar_summary(tag, value, i + 1)
+
+            # Translate fixed images for debugging.
+            if (i + 1) % self.sample_step == 0:
+                with torch.no_grad():
+                    x_fake_list = [x_fixed]
+                    for c_fixed in c_mnist_list:
+                        c_trg = torch.cat([c_fixed, zero_svhn, mask_mnist], dim=1)
+                        x_fake_list.append(self.G(x_fixed, c_trg))
+                    for c_fixed in c_svhn_list:
+                        c_trg = torch.cat([zero_mnist, c_fixed, mask_svhn], dim=1)
+                        x_fake_list.append(self.G(x_fixed, c_trg))
+                    x_concat = torch.cat(x_fake_list, dim=3)
+                    sample_path = os.path.join(self.sample_dir, '{}-images.jpg'.format(i + 1))
+                    save_image(self.denorm(x_concat.data.cpu()), sample_path, nrow=1, padding=0)
+                    print('Saved real and fake images into {}...'.format(sample_path))
+
+            # Save model checkpoints.
+            if (i + 1) % self.model_save_step == 0:
+                G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(i + 1))
+                D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(i + 1))
+                torch.save(self.G.state_dict(), G_path)
+                torch.save(self.D.state_dict(), D_path)
+                print('Saved model checkpoints into {}...'.format(self.model_save_dir))
+
+            # Decay learning rates.
+            if (i + 1) % self.lr_update_step == 0 and (i + 1) > (self.num_iters - self.num_iters_decay):
+                g_lr -= (self.g_lr / float(self.num_iters_decay))
+                d_lr -= (self.d_lr / float(self.num_iters_decay))
+                self.update_lr(g_lr, d_lr)
+                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
+
 
     def test_multi(self):
         """Translate images using StarGAN trained on multiple datasets."""
